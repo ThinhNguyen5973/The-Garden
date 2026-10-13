@@ -17,25 +17,6 @@ Chronicle says so.
 
 No dependencies. No build step. No assets. One file.
 
----
-
-## Run it
-
-Download the HTML file and open it in any modern browser. That's the whole
-installation. (If your browser is strict about `localStorage` on `file://`
-URLs, serve it locally instead: `python3 -m http.server`, then visit
-`http://localhost:8000/garden.html`.)
-
-| Flag | Effect |
-|---|---|
-| `?fast` | 10× time — a full life in ~40 seconds, for exploring generations quickly |
-| `?reset` | start a fresh garden on load (stays active while in the URL) |
-| `?kiosk=1` / `?kiosk=0` | force kiosk mode on/off (auto-detects touch devices) |
-
-Flags combine freely: `garden.html?reset&fast`
-
----
-
 ## How to play
 
 There are no menus and no tutorial. Everything is taught by light and gesture:
