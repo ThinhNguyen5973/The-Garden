@@ -1,0 +1,1507 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>THE GARDEN — Stage 5</title>
+<style>
+  html, body { margin:0; height:100%; background:#080604; overflow:hidden;
+               user-select:none; -webkit-user-select:none; }
+  canvas { display:block; cursor:none; touch-action:none; }
+  #vignette { position:fixed; inset:0; pointer-events:none;
+    background: radial-gradient(ellipse at 50% 45%,
+      transparent 55%, rgba(3,2,1,0.85) 100%); }
+  #card { position:fixed; max-width:300px; pointer-events:none; z-index:10;
+    font-family: Georgia, 'Times New Roman', serif; text-align:left;
+    color:#e9d7b5; opacity:0; transition:opacity 0.5s;
+    text-shadow: 0 0 14px rgba(255,190,110,0.28); }
+  #card .era { font-size:11px; letter-spacing:0.25em; text-transform:uppercase;
+    color:#a98d63; margin-bottom:10px; }
+  #card .name { font-size:18px; color:#ffd9a0; margin:0 0 10px 0;
+    opacity:0; transform:translateY(4px);
+    transition:opacity 0.9s ease, transform 0.9s ease; }
+  #card .line { font-size:15px; line-height:1.55; margin:0 0 10px 0;
+    opacity:0; transform:translateY(4px);
+    transition:opacity 0.9s ease, transform 0.9s ease; }
+  #card.show { opacity:1; }
+  #card.show .name, #card.show .line { opacity:1; transform:none; }
+</style>
+</head>
+<body>
+<canvas id="garden"></canvas>
+<div id="vignette"></div>
+<div id="card"></div>
+<script>
+"use strict";
+/* ====== THE GARDEN — Stage 5 (complete, with the Seed of Return) ======
+   Tap reads. Drag blooms to cross. The family shows itself when asked.
+   The Seed of Return (bottom-right): tap to learn, hold 2.5s to begin again.
+   ?fast (x10 lives), ?reset (fresh garden), ?kiosk=1 / ?kiosk=0 */
+
+// ---------- seeded PRNG ----------
+function mulberry32(seed){
+  return function(){
+    seed|=0; seed=(seed+0x6D2B79F5)|0;
+    let t=Math.imul(seed^(seed>>>15),1|seed);
+    t=(t+Math.imul(t^(t>>>7),61|t))^t;
+    return ((t^(t>>>14))>>>0)/4294967296;
+  };
+}
+const TS = /[?&]fast/.test(location.search) ? 10 : 1;
+const D = ms => ms/TS;
+
+// ---------- kiosk ----------
+const KIOSK=(function(){
+  if(/[?&]kiosk=1/.test(location.search)) return true;
+  if(/[?&]kiosk=0/.test(location.search)) return false;
+  return (('ontouchstart' in window)||navigator.maxTouchPoints>0) &&
+         !(window.matchMedia && window.matchMedia('(pointer: fine)').matches);
+})();
+const TAPR=KIOSK?1.7:1;
+const DRAGT=KIOSK?26:18;
+const TAPMOVE=KIOSK?10:6;
+
+// ---------- canvas ----------
+const canvas=document.getElementById('garden');
+const ctx=canvas.getContext('2d');
+let vw=0, vh=0, dpr=1;
+function resize(){
+  dpr=Math.min(2,window.devicePixelRatio||1);
+  vw=window.innerWidth; vh=window.innerHeight;
+  canvas.width=vw*dpr; canvas.height=vh*dpr;
+  canvas.style.width=vw+'px'; canvas.style.height=vh+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize',resize); resize();
+
+function glowSprite(R, rgb){
+  const c=document.createElement('canvas'); c.width=c.height=R*2;
+  const g=c.getContext('2d');
+  const rg=g.createRadialGradient(R,R,0,R,R,R);
+  rg.addColorStop(0,'rgba('+rgb+',1)');
+  rg.addColorStop(1,'rgba('+rgb+',0)');
+  g.fillStyle=rg; g.fillRect(0,0,R*2,R*2);
+  return c;
+}
+const PALMG=glowSprite(70,'255,214,140');
+const HOLDG=glowSprite(170,'255,206,120');
+
+/* ============ THE STORY GENES ============ */
+function applyPron(t,male){
+  return t.replace(/@s/g,male?'He':'She').replace(/@e/g,male?'he':'she')
+          .replace(/@p/g,male?'his':'her').replace(/@o/g,male?'him':'her')
+          .replace(/@r/g,male?'his':'hers');
+}
+const LOCI=['KEEPS','LOVES','REGRETS','HOPES','FEARS','HUMS'];
+const LOCIWORD={KEEPS:'keeping',LOVES:'loving',REGRETS:'regret',HOPES:'hope',FEARS:'fear',HUMS:'humming'};
+const PREFIX={KEEPS:'@s keeps',LOVES:'@s loves',REGRETS:'@s regrets',
+              HOPES:'@s hopes for',FEARS:'@s fears',HUMS:'@s hums'};
+const POOL={
+ KEEPS:[
+  "a bone flute that played only one note",
+  "the last coin of a bad year",
+  "a button from a coat @e never owned",
+  "a key to a door that burned down",
+  "the first warm thing @e was ever given",
+  "a small crooked nail @e straightened for luck",
+  "a walnut @e never ate",
+  "the heel of a boot that walked too far",
+  "a scrap of red cloth from a day @e refuses to describe",
+  "@p grandmother's thimble, which fits no finger"],
+ LOVES:[
+  "the hour after rain",
+  "roads that go nowhere",
+  "the smell of old paper",
+  "the exact moment a lamp is needed",
+  "names of birds nobody uses anymore",
+  "the cold side of the stone",
+  "letters @e will never send",
+  "the sound of other people's kitchens",
+  "wasted afternoons, spent well",
+  "the way soil forgives everything eventually"],
+ REGRETS:[
+  "every map @e never drew",
+  "the winter @e stayed",
+  "the words @e saved for later",
+  "one door @e did not open",
+  "nothing, and that is @p own secret",
+  "the friend @e let drift",
+  "each yes that should have been no",
+  "the songs @e only ever hummed",
+  "a garden @e left before it bloomed",
+  "that @e learned too late that leaving is also a kind of keeping"],
+ HOPES:[
+  "one more slow spring",
+  "a door that opens outward",
+  "the courage to be ordinary",
+  "children who keep the small things",
+  "a letter that arrives too late, but arrives",
+  "enough weather to matter",
+  "kind misremembering",
+  "one hour in a body that never aches",
+  "a line that outlives the name",
+  "a winter someone else carries"],
+ FEARS:[
+  "the sound of locked gates",
+  "being forgotten on purpose",
+  "the quiet after the last bell",
+  "that @p keeping is only hoarding",
+  "windows at night, from outside",
+  "the day the wind stops bringing seeds",
+  "outliving the garden",
+  "nothing — which is worse",
+  "a story @e cannot finish",
+  "that they will bloom alike, every one"],
+ HUMS:[
+  "the wrong words, on purpose",
+  "a song with no last verse",
+  "@p mother's name in a minor key",
+  "whatever the wind was humming first",
+  "two notes, over and over, like walking",
+  "a lullaby nobody taught @o",
+  "the sound of @p own name, slightly changed",
+  "counting songs for things that are gone",
+  "a tune that only works in the dark",
+  "the garden's silence, but louder"]
+};
+function makeStory(r){
+  const s={};
+  for(const L of LOCI){
+    const i=(r()*POOL[L].length)|0;
+    s[L]={i,t:POOL[L][i]};
+  }
+  return s;
+}
+function crossStory(a,b,elders,r){
+  const mut=0.04+0.08*elders;
+  const story={}, muts=[];
+  for(const L of LOCI){
+    const src=r()<0.5?a.story[L]:b.story[L];
+    if(r()<mut){
+      if(r()<0.15){
+        let fromL=L;
+        while(fromL===L) fromL=LOCI[(r()*LOCI.length)|0];
+        const donor=r()<0.5?a:b;
+        story[L]={i:-1,t:donor.story[fromL].t};
+        muts.push({L,type:'moved',from:fromL});
+      } else {
+        let i=(r()*POOL[L].length)|0;
+        if(src.i===i) i=(i+1)%POOL[L].length;
+        story[L]={i,t:POOL[L][i]};
+        muts.push({L,type:'shift'});
+      }
+    } else {
+      story[L]={i:src.i,t:src.t};
+    }
+  }
+  return {story,muts};
+}
+
+// ---------- the visible genome ----------
+function makeGenome(seed, ov){
+  const r=mulberry32(seed);
+  const g={
+    height: 40+r()*70,
+    stemHue: 25+r()*95,
+    lean: r()*2-1,
+    leafForm: (r()*3)|0,
+    leafCount: 2+((r()*3)|0),
+    petals: 3+((r()*6)|0),
+    petalHue: (r()<0.08?200:8+r()*52),
+    petalForm: (r()*3)|0,
+    ph: r()*Math.PI*2
+  };
+  if(ov) Object.assign(g,ov);
+  return g;
+}
+function crossGenome(a,b,elders,r){
+  const A=a.genome,B=b.genome;
+  const mut=0.04+0.08*elders;
+  const num=(x,y,j,lo,hi)=>{
+    let v=r()<0.5?x:y;
+    if(r()<mut) v+=(r()*2-1)*j;
+    return Math.max(lo,Math.min(hi,v));
+  };
+  const form=(x,y)=> r()<mut ? (r()*3)|0 : (r()<0.5?x:y);
+  return {
+    height: num(A.height,B.height,18,40,112),
+    stemHue: num(A.stemHue,B.stemHue,18,22,120),
+    lean: num(A.lean,B.lean,0.3,-1,1),
+    leafForm: form(A.leafForm,B.leafForm),
+    leafCount: Math.max(2,Math.min(4, r()<mut ? 2+((r()*3)|0) : (r()<0.5?A.leafCount:B.leafCount))),
+    petals: Math.max(3,Math.min(8, r()<mut ? 3+((r()*6)|0) : (r()<0.5?A.petals:B.petals))),
+    petalHue: r()<mut ? (r()<0.08?200:8+r()*52) : (r()<0.5?A.petalHue:B.petalHue),
+    petalForm: form(A.petalForm,B.petalForm),
+    ph: r()*Math.PI*2
+  };
+}
+
+// ---------- names ----------
+const NAMES=["Fern","Ash","Rowan","Sorrel","Briar","Yarrow","Wren","Hazel",
+             "Elder","Thorn","Moss","Reed","Ivy","Sage","Juniper","Clover"];
+const GENWORDS=["First","Second","Third","Fourth","Fifth","Sixth","Seventh",
+                "Eighth","Ninth","Tenth","Eleventh","Twelfth","Thirteenth",
+                "Fourteenth","Fifteenth"];
+const MAX_PLANTS=14;
+function driftName(r,a,b){
+  const living=plants.map(q=>q.name);
+  let n;
+  const roll=r();
+  if(roll<0.40){
+    const base=r()<0.5?a:b;
+    const suf=['a','il','wen','ra','ash','del','is','et','orn','yn'];
+    let stem=base;
+    if(/[aeiou]$/.test(stem)&&stem.length>3) stem=stem.slice(0,-1);
+    n=stem+suf[(r()*suf.length)|0];
+  } else if(roll<0.70){
+    const al=2+((r()*2)|0), bl=2+((r()*2)|0);
+    n=a.slice(0,al)+b.slice(Math.max(1,b.length-bl));
+  } else {
+    const pool=NAMES.filter(x=>x!==a&&x!==b);
+    n=pool[(r()*pool.length)|0];
+  }
+  n=(n.charAt(0).toUpperCase()+n.slice(1).toLowerCase()).slice(0,10);
+  if(living.includes(n)||n===a||n===b) n=n+'a';
+  return n;
+}
+
+// ---------- the chronicle ----------
+const chronicle=[];
+let dirty=true;
+function log(s){
+  chronicle.push(s);
+  if(chronicle.length>200) chronicle.shift();
+  dirty=true;
+}
+const TAGSTOP=new Set(['of','from','to','that','for','which','and','she','he','a','an','the','in','on','with']);
+function tagOf(t,male){
+  let s=applyPron(t,male).replace(/^(a|an|the) /,'').replace(/^(his|her) /,'');
+  const words=s.split(/[\s,]+/);
+  const out=[];
+  for(const w of words){
+    if(TAGSTOP.has(w.toLowerCase())) break;
+    out.push(w);
+    if(out.length>=3) break;
+  }
+  return out.join(' ')||'something small';
+}
+function keepsAlive(text,deadP){
+  for(const q of plants) if(q!==deadP&&q.story&&q.story.KEEPS.t===text) return true;
+  for(const sd of seeds) if(sd.story&&sd.story.KEEPS&&sd.story.KEEPS.t===text) return true;
+  if(carried&&carried.story&&carried.story.KEEPS.t===text) return true;
+  return false;
+}
+
+/* ============ SOUND ============ */
+let AC=null, master=null, noiseBuf=null, humOsc=null, humGain=null, lastHum=0;
+const SCALE=[110,130.81,146.83,164.81,196,220,261.63,293.66,329.63,392];
+function storyPitch(story){
+  const i=story.HUMS.i;
+  if(i>=0&&i<SCALE.length) return SCALE[i];
+  let h=0; const t=story.HUMS.t;
+  for(let c=0;c<t.length;c++) h=(h*31+t.charCodeAt(c))|0;
+  return SCALE[Math.abs(h)%SCALE.length];
+}
+function armAudio(){
+  if(AC){ if(AC.state==='suspended') AC.resume(); return; }
+  try{
+    AC=new (window.AudioContext||window.webkitAudioContext)();
+    master=AC.createGain(); master.gain.value=0.5; master.connect(AC.destination);
+    const len=AC.sampleRate*2;
+    noiseBuf=AC.createBuffer(1,len,AC.sampleRate);
+    const d=noiseBuf.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+    const src=AC.createBufferSource(); src.buffer=noiseBuf; src.loop=true;
+    const lp=AC.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=90; lp.Q.value=0.5;
+    const dg=AC.createGain(); dg.gain.value=0.010;
+    src.connect(lp); lp.connect(dg); dg.connect(master);
+    src.start();
+    humOsc=AC.createOscillator(); humOsc.type='sine'; humOsc.frequency.value=110;
+    humGain=AC.createGain(); humGain.gain.value=0;
+    humOsc.connect(humGain); humGain.connect(master);
+    humOsc.start();
+  }catch(e){}
+}
+function breath(kind, vol){
+  vol=vol===undefined?1:vol;
+  if(!AC||AC.state!=='running') return;
+  const t=AC.currentTime;
+  const src=AC.createBufferSource(); src.buffer=noiseBuf;
+  src.playbackRate.value=0.9+Math.random()*0.2;
+  const bp=AC.createBiquadFilter(); bp.type='bandpass'; bp.Q.value=0.9;
+  const g=AC.createGain();
+  let dur, v;
+  if(kind==='deep'){
+    dur=1.3; v=0.5*vol;
+    bp.frequency.setValueAtTime(180,t);
+    bp.frequency.exponentialRampToValueAtTime(900,t+dur*0.7);
+    bp.frequency.exponentialRampToValueAtTime(320,t+dur);
+    const o=AC.createOscillator(); o.type='sine';
+    o.frequency.setValueAtTime(58,t);
+    o.frequency.exponentialRampToValueAtTime(40,t+0.5);
+    const og=AC.createGain(); og.gain.setValueAtTime(0.22*vol,t);
+    og.gain.exponentialRampToValueAtTime(0.001,t+0.6);
+    o.connect(og); og.connect(master); o.start(t); o.stop(t+0.65);
+  }
+  else if(kind==='die'){
+    dur=0.5; v=0.10*vol;
+    bp.frequency.setValueAtTime(700,t);
+    bp.frequency.exponentialRampToValueAtTime(180,t+dur);
+  }
+  else {
+    dur=0.6; v=0.16*vol;
+    bp.frequency.setValueAtTime(240,t);
+    bp.frequency.exponentialRampToValueAtTime(820,t+dur*0.6);
+    bp.frequency.exponentialRampToValueAtTime(300,t+dur);
+  }
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.linearRampToValueAtTime(v,t+dur*0.35);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  src.connect(bp); bp.connect(g); g.connect(master);
+  src.start(t); src.stop(t+dur+0.05);
+}
+function chime(freq,vol,delay){
+  if(!AC||AC.state!=='running') return;
+  const o=AC.createOscillator(); o.type='sine'; o.frequency.value=freq;
+  const g=AC.createGain(); const t0=AC.currentTime+(delay||0);
+  g.gain.setValueAtTime(0.0001,t0);
+  g.gain.linearRampToValueAtTime(vol,t0+0.08);
+  g.gain.exponentialRampToValueAtTime(0.0001,t0+1.2);
+  o.connect(g); g.connect(master); o.start(t0); o.stop(t0+1.3);
+}
+function farewell(p){
+  if(!AC||AC.state!=='running') return;
+  const o=AC.createOscillator(); o.type='sine'; o.frequency.value=storyPitch(p.story);
+  const g=AC.createGain(); const t0=AC.currentTime;
+  g.gain.setValueAtTime(0.0001,t0);
+  g.gain.linearRampToValueAtTime(0.045,t0+0.4);
+  g.gain.exponentialRampToValueAtTime(0.0001,t0+2.6);
+  o.connect(g); g.connect(master); o.start(t0); o.stop(t0+2.7);
+}
+
+// ---------- state ----------
+const plants=[], seeds=[], hulls=[], particles=[], crossings=[];
+let nextId=1, carried=null, inspecting=null;
+let dragFrom=null, dragging=false, downX=0, downY=0;
+let hold=null, plantedAt=-1e9;
+let maxGenSeen=1, hadLife=false, lineShown=false, quietOpen=false, chronOpen=false;
+let nextWild=performance.now()+D(40000);
+let resetHold=null, resetPhase=null, resetT0=0;   // the Seed of Return
+const kinBypass={};
+function kinKey(a,b){ return a.id<b.id ? a.id+'-'+b.id : b.id+'-'+a.id; }
+
+// ---------- kinship (warnings only) ----------
+function related(a,b){
+  for(const ea of a.anc) if(ea.id===b.id) return true;
+  for(const eb of b.anc) if(eb.id===a.id) return true;
+  for(const ea of a.anc)
+    for(const eb of b.anc)
+      if(ea.id===eb.id && ea.h+eb.h<=4) return true;
+  return false;
+}
+function childAnc(a,b){
+  const out=[], seen={};
+  const add=(id,h)=>{ if(!seen[id]&&h<=2){ seen[id]=1; out.push({id,h}); } };
+  add(a.id,1); add(b.id,1);
+  for(const e of a.anc) add(e.id,e.h+1);
+  for(const e of b.anc) add(e.id,e.h+1);
+  return out;
+}
+
+// ---------- lifecycle ----------
+function phaseOf(p,t){
+  const age=t-p.birth;
+  const e0=Math.min(1,Math.max(0,age/p.growDur));
+  const ease=e0*e0*(3-2*e0);
+  const wp=age>p.witherAt ? Math.min(1,(age-p.witherAt)/(p.lifeDur-p.witherAt)) : 0;
+  const elder=age>p.elderAt && wp===0 && ease>=1;
+  return {age,ease,wp,elder};
+}
+function canCross(p,t){
+  const ph=phaseOf(p,t);
+  return ph.ease>=1 && ph.wp===0 && t>p.cdUntil && !p.busy;
+}
+function pairableWith(p,q,t){
+  if(!canCross(p,t)||!canCross(q,t)) return false;
+  if(p.mateId!=null && p.mateId!==q.id) return false;
+  if(q.mateId!=null && q.mateId!==p.id) return false;
+  return true;
+}
+
+// ---------- plants ----------
+function plantX(p){ return p.xF*vw; }
+function plantBaseY(p){ return p.yF*vh; }
+function bloomPoint(p){
+  const H=p.genome.height;
+  return {x:plantX(p)+p.genome.lean*H*0.35, y:plantBaseY(p)-H};
+}
+function addPlant(o){
+  const p=Object.assign({
+    id:nextId++, seed:(Math.random()*1e9)|0,
+    parentNames:[], anc:[], wildBlood:false, wild:false,
+    founder:false, male:false, gen:1, story:null,
+    mateId:null, mateName:null,
+    flare:performance.now(), h:0, cdUntil:0, busy:false, shedAcc:0
+  },o);
+  if(p.id>=nextId) nextId=p.id+1;
+  if(!p.story) p.story=makeStory(mulberry32(p.seed));
+  p.elderAt=p.lifeDur*0.70;
+  p.witherAt=p.lifeDur*0.88;
+  p.shedIv=Math.max(600,(p.lifeDur-p.witherAt)/Math.max(1,p.genome.petals));
+  plants.push(p);
+  maxGenSeen=Math.max(maxGenSeen,p.gen);
+  hadLife=true;
+  dirty=true;
+  if(quietOpen){ closeInspect(); quietOpen=false; }
+  return p;
+}
+function addFounder(xF,yF,seed,ov,name,male){
+  addPlant({
+    xF,yF, seed, genome:makeGenome(seed,ov), name, male, founder:true, gen:1,
+    story:makeStory(mulberry32(seed)),
+    birth:performance.now()-30000,
+    growDur:(12000+(seed%7)*900),
+    lifeDur:((300+(seed%120))*1000)*1.25/TS
+  });
+}
+function plantSeed(sd,xF,yF){
+  const sid=sd.seed;
+  const gm=sd.wildBlood?0.75:1;
+  const lm=sd.wildBlood?1.15:1;
+  addPlant({
+    xF,yF, seed:sid, genome:sd.genome, name:sd.name, male:sd.male,
+    wild:false, gen:sd.gen, parentNames:sd.parentNames||[],
+    anc:sd.anc||[], wildBlood:!!sd.wildBlood,
+    story:sd.story,
+    birth:performance.now(),
+    growDur:(12000+(sid%7)*900)*gm/TS,
+    lifeDur:((300+(sid%120))*1000)*lm/TS
+  });
+  const gw=(GENWORDS[sd.gen-1]||(sd.gen+'th')).toLowerCase();
+  log(sd.name+' was planted — the '+gw+' generation began.');
+  if(sd.muts) for(const m of sd.muts){
+    if(m.type==='shift') log('In '+sd.name+', the '+LOCIWORD[m.L]+' shifted.');
+    else log('In '+sd.name+', a '+LOCIWORD[m.from]+' became a '+LOCIWORD[m.L]+'.');
+  }
+  breath('deep');
+}
+function spawnWildflower(){
+  let xF=0, yF=0, ok=false;
+  for(let i=0;i<6&&!ok;i++){
+    xF=0.08+Math.random()*0.84;
+    yF=0.76+Math.random()*0.20;
+    ok=true;
+    for(const q of plants)
+      if(Math.hypot(plantX(q)-xF*vw,plantBaseY(q)-yF*vh)<44){ ok=false; break; }
+    if(ok && Math.hypot(xF*vw-30,yF*vh-(soilTop()+34))<60) ok=false;
+    if(ok && Math.hypot(xF*vw-(vw-30),yF*vh-(soilTop()+34))<60) ok=false;
+  }
+  if(!ok) return;
+  const sid=(Math.random()*1e9)|0;
+  const p=addPlant({
+    xF,yF, seed:sid, genome:makeGenome(sid), story:makeStory(mulberry32(sid)),
+    name:NAMES[sid%NAMES.length], male:Math.random()<0.5,
+    wild:true, gen:0, parentNames:[], anc:[],
+    birth:performance.now(),
+    growDur:(12000+(sid%7)*900)/TS,
+    lifeDur:((300+(sid%120))*1000)/TS
+  });
+  spawnP(xF*vw,yF*vh,45,5,1.1,-20);
+  log(p.name+' took root from nowhere.');
+  breath('flare',0.5);
+}
+function diePlant(p){
+  const kt=p.story.KEEPS.t;
+  const mq=p.mateId!=null?plants.find(z=>z.id===p.mateId):null;
+  if(!keepsAlive(kt,p)){
+    log(p.name+' withered, and the '+tagOf(kt,p.male)+' went with '+(p.male?'him':'her')+'.');
+  } else if(mq){
+    const gw=(GENWORDS[p.gen-1]||(p.gen+'th')).toLowerCase();
+    log(p.name+' withered in the '+gw+' generation, paired to '+p.mateName+'.');
+  } else if(p.wild){
+    log(p.name+' withered, come from nowhere and gone back to it.');
+  } else {
+    const gw=(GENWORDS[p.gen-1]||(p.gen+'th')).toLowerCase();
+    log(p.name+' withered in the '+gw+' generation.');
+  }
+  spawnP(plantX(p),plantBaseY(p)-p.genome.height*0.4,38,4,1.2,-18);
+  hulls.push({xF:p.xF,yF:p.yF});
+  if(hulls.length>40) hulls.shift();
+  plants.splice(plants.indexOf(p),1);
+  breath('die');
+  farewell(p);
+}
+
+// ---------- crossing ----------
+function startCross(a,b,kin){
+  a.busy=b.busy=true;
+  crossings.push({a,b,kin,t0:performance.now(),dur:1200});
+  closeInspect();
+}
+function completeCross(c){
+  const a=c.a,b=c.b,now=performance.now();
+  a.busy=b.busy=false;
+  a.flare=b.flare=now;
+  a.cdUntil=b.cdUntil=now+D(75000);
+  const wasPaired=a.mateId!=null;
+  if(!wasPaired){
+    a.mateId=b.id; a.mateName=b.name;
+    b.mateId=a.id; b.mateName=a.name;
+    if(c.kin) log(a.name+' was crossed with '+b.name+' — one blood, twice chosen — and they were paired.');
+    else log(a.name+' was crossed with '+b.name+', and they were paired.');
+  } else {
+    log(a.name+' and '+b.name+' were crossed again.');
+  }
+  const wildBlood=a.wild||b.wild;
+  const elders=(phaseOf(a,now).elder?1:0)+(phaseOf(b,now).elder?1:0);
+  const gen=Math.max(a.gen,b.gen)+1;
+  const anc=childAnc(a,b);
+  const r=mulberry32((Math.random()*1e9)|0);
+  const A=bloomPoint(a), B=bloomPoint(b);
+  for(let i=0;i<2;i++){
+    const cs=crossStory(a,b,elders,r);
+    seeds.push({
+      genome:crossGenome(a,b,elders,r),
+      story:cs.story, muts:cs.muts,
+      gen, anc, wildBlood, wild:false,
+      parentNames:[a.name,b.name],
+      name:driftName(r,a.name,b.name), male:r()<0.5,
+      seed:(Math.random()*1e9)|0,
+      x:(A.x+B.x)/2+(i===0?-26:26), y:(A.y+B.y)/2-34,
+      born:now
+    });
+    chime(storyPitch(cs.story),0.028,0.35+i*0.18);
+  }
+  chime(storyPitch(a.story),0.035,0);
+  chime(storyPitch(b.story),0.035,0.07);
+  maxGenSeen=Math.max(maxGenSeen,gen);
+  spawnP((A.x+B.x)/2,(A.y+B.y)/2,45,6,1.4,-30);
+  breath('deep');
+  dirty=true;
+}
+
+// ---------- particles ----------
+function spawnP(x,y,hue,n,r0,vy){
+  for(let i=0;i<n;i++) particles.push({
+    x:x+(Math.random()*2-1)*8, y:y+(Math.random()*2-1)*4,
+    vx:(Math.random()*2-1)*12, vy:vy*(0.5+Math.random()),
+    hue, life:0, maxLife:2200+Math.random()*1200, r:r0*(0.7+Math.random()*0.6)
+  });
+}
+
+// ---------- description ----------
+function eraOf(p){
+  if(p.founder) return 'The First Garden';
+  if(p.wild) return 'Grown From Nowhere';
+  return 'The '+(GENWORDS[p.gen-1]||(p.gen+'th'))+' Generation';
+}
+function PCOUNT(p){
+  return ["three","four","five","six","seven","eight"][p.genome.petals-3]+' petals';
+}
+function describe(p,t){
+  const g=p.genome, ph=phaseOf(p,t), L=[];
+  const S=p.male?'He':'She', s=p.male?'he':'she', P=p.male?'his':'her';
+  if(p.founder) L.push('One of the two Founders. Every line in this garden begins with them.');
+  else if(p.wild) L.push('No one planted '+s+'. The wind did.');
+  else if(p.parentNames.length===2) L.push((p.male?'Son':'Daughter')+' of '+p.parentNames[0]+' and '+p.parentNames[1]+'.');
+  else if(p.parentNames.length===1) L.push((p.male?'Son':'Daughter')+' of '+p.parentNames[0]+'.');
+  if(p.mateId!=null){
+    const mq=plants.find(z=>z.id===p.mateId);
+    if(mq) L.push(S+' is paired with '+p.mateName+', and will cross with no one else.');
+    else L.push(S+' was paired with '+p.mateName+', who has withered.');
+  }
+  if(p.wild) L.push(applyPron('@s is the wind\'s planting — new blood for a narrow line.',p.male));
+  const hW = g.height>85?'tall, taller than most in this garden'
+           : (g.height>62?'of middle height, easy among neighbors'
+                        :'small, keeping close to the soil');
+  const pw = g.petalHue>=200?'petals blue as remembered grief'
+           : (g.petalHue<20?'petals red as embers'
+           : (g.petalHue<40?'petals warm as lamplight':'petals gold as morning'));
+  L.push(S+' stands '+hW+', with '+PCOUNT(p)+', '+pw+'.');
+  if(g.petalHue>=200) L.push('No one asks for the blue ones. The garden grows them when something must be remembered.');
+  for(const LC of LOCI)
+    L.push(applyPron(PREFIX[LC]+' '+p.story[LC].t+'.',p.male));
+  if(p.wildBlood) L.push('Wild blood runs in '+s+'; '+s+' will grow strong.');
+  if(ph.ease<1) L.push('Too young to cross — still opening.');
+  else if(ph.elder) L.push(P+' petals are thinning. What '+s+' gives now will be strange.');
+  return L;
+}
+
+// ---------- input ----------
+const palm={x:vw/2,y:vh/2}, mouse={x:vw/2,y:vh/2};
+const soilTop=()=>vh*0.72;
+const stonePos=()=>({x:30,y:soilTop()+34});
+const resetPos=()=>({x:vw-30,y:soilTop()+34});
+
+function nearestPlant(x,y){
+  const PR=70*TAPR;
+  let best=null,bd=1e9;
+  for(const p of plants){
+    const b=bloomPoint(p);
+    const d1=(b.x-x)**2+(b.y-y)**2, d2=(plantX(p)-x)**2+(plantBaseY(p)-y)**2;
+    const d=Math.min(d1,d2);
+    if(d<bd){ bd=d; best=p; }
+  }
+  return bd<PR*PR ? {p:best,d:bd} : null;
+}
+function nearestSeed(x,y){
+  const SR=32*TAPR;
+  let best=null,bd=1e9;
+  for(const sd of seeds){
+    const d=(sd.x-x)**2+(sd.y-y)**2;
+    if(d<bd){ bd=d; best=sd; }
+  }
+  return bd<SR*SR ? {sd:best,d:bd} : null;
+}
+
+canvas.addEventListener('pointerdown',e=>{
+  if(e.button!==0) return;
+  armAudio();
+  if(resetPhase) return;
+  mouse.x=palm.x=e.clientX; mouse.y=palm.y=e.clientY;
+  downX=e.clientX; downY=e.clientY;
+  const rp=resetPos();
+  const nearReset=Math.hypot(e.clientX-rp.x,e.clientY-rp.y)<36*TAPR;
+  if(nearReset){ resetHold={start:performance.now()}; return; }
+  const pn=nearestPlant(e.clientX,e.clientY);
+  const sn=nearestSeed(e.clientX,e.clientY);
+  const sp=stonePos();
+  const nearStone=Math.hypot(e.clientX-sp.x,e.clientY-sp.y)<36*TAPR;
+  if(pn && (!sn||pn.d<sn.d)){
+    if(canCross(pn.p,performance.now())) dragFrom={p:pn.p};
+  }
+  else if(carried && e.clientY>soilTop() && plants.length<MAX_PLANTS && !nearStone){
+    let blocked=false;
+    for(const q of plants) if(Math.hypot(plantX(q)-e.clientX,plantBaseY(q)-e.clientY)<40) blocked=true;
+    for(const sd of seeds) if(Math.hypot(sd.x-e.clientX,sd.y-e.clientY)<30) blocked=true;
+    if(!blocked) hold={x:e.clientX,y:e.clientY,start:performance.now()};
+  }
+});
+window.addEventListener('pointermove',e=>{
+  mouse.x=e.clientX; mouse.y=e.clientY;
+  if(hold && Math.hypot(e.clientX-hold.x,e.clientY-hold.y)>40) hold=null;
+  if(resetHold && Math.hypot(e.clientX-downX,e.clientY-downY)>40) resetHold=null;
+  if(dragFrom && Math.hypot(e.clientX-downX,e.clientY-downY)>DRAGT) dragging=true;
+});
+canvas.addEventListener('pointerup',e=>{
+  if(resetPhase) return;
+  if(performance.now()-plantedAt<600){ dragFrom=null; dragging=false; return; }
+  if(hold){ hold=null; dragFrom=null; dragging=false; return; }
+  if(resetHold){
+    const held=performance.now()-resetHold.start;
+    resetHold=null;
+    if(held<2500) openResetHint();       // a tap only asks; a hold acts
+    return;
+  }
+  if(dragFrom && dragging){
+    const t=performance.now();
+    const h=nearestPlant(e.clientX,e.clientY);
+    let target=null;
+    if(h && h.p!==dragFrom.p && pairableWith(dragFrom.p,h.p,t)) target=h.p;
+    if(target){
+      if(related(dragFrom.p,target)){
+        const key=kinKey(dragFrom.p,target);
+        if(!kinBypass[key]){
+          kinBypass[key]=true;
+          dirty=true;
+          openCaution(dragFrom.p,target);
+        } else {
+          startCross(dragFrom.p,target,true);
+        }
+      } else {
+        startCross(dragFrom.p,target,false);
+      }
+    }
+    dragFrom=null; dragging=false;
+    return;
+  }
+  dragFrom=null; dragging=false;
+  if(Math.hypot(e.clientX-downX,e.clientY-downY)>TAPMOVE) return;
+  const sp=stonePos();
+  if(Math.hypot(e.clientX-sp.x,e.clientY-sp.y)<26*TAPR){
+    if(chronOpen) closeInspect();
+    else openChronicle();
+    return;
+  }
+  const sn=nearestSeed(e.clientX,e.clientY);
+  const pn=nearestPlant(e.clientX,e.clientY);
+  if(sn && (!pn||sn.d<pn.d)){
+    if(carried){
+      const old=carried;
+      old.x=sn.sd.x; old.y=sn.sd.y; old.born=performance.now();
+      seeds.push(old);
+    }
+    seeds.splice(seeds.indexOf(sn.sd),1);
+    carried=sn.sd;
+    dirty=true;
+    closeInspect();
+    breath('flare',0.35);
+    return;
+  }
+  if(pn){
+    if(pn.p===inspecting) closeInspect();
+    else openInspect(pn.p);
+  } else {
+    closeInspect();
+  }
+});
+
+// ---------- the card ----------
+const cardEl=document.getElementById('card');
+function fillCard(era,name,lines){
+  cardEl.innerHTML='';
+  const er=document.createElement('div');
+  er.className='era'; er.textContent=era;
+  cardEl.appendChild(er);
+  let di=0;
+  if(name){
+    const n=document.createElement('div');
+    n.className='name'; n.textContent=name;
+    n.style.transitionDelay=(0.1+(di++)*0.75)+'s';
+    cardEl.appendChild(n);
+  }
+  lines.forEach(txt=>{
+    const el=document.createElement('p');
+    el.className='line';
+    el.style.transitionDelay=(0.1+(di++)*0.75)+'s';
+    el.textContent=txt;
+    cardEl.appendChild(el);
+  });
+}
+function openInspect(p){
+  chronOpen=false; inspecting=p;
+  fillCard(eraOf(p),p.name,describe(p,performance.now()));
+  const b=bloomPoint(p);
+  cardEl.style.left=Math.min(Math.max(b.x+36,12),Math.max(12,vw-320))+'px';
+  cardEl.style.top=Math.min(Math.max(b.y-20,12),Math.max(12,vh-400))+'px';
+  requestAnimationFrame(()=>cardEl.classList.add('show'));
+}
+function closeInspect(){
+  inspecting=null; chronOpen=false;
+  cardEl.classList.remove('show');
+}
+function openChronicle(){
+  chronOpen=true; inspecting=null;
+  const lines=[];
+  if(chronicle.length>8) lines.push('The earlier years have settled into the soil.');
+  for(const s of chronicle.slice(-8)) lines.push(s);
+  if(!lines.length) lines.push('The garden is young. Nothing has ended yet.');
+  fillCard('The Chronicle','',lines);
+  cardEl.style.left='16px';
+  cardEl.style.top=Math.max(12,soilTop()-330)+'px';
+  requestAnimationFrame(()=>cardEl.classList.add('show'));
+}
+function openCaution(a,b){
+  chronOpen=false; inspecting=null;
+  fillCard('A Word of Caution','',
+    [a.name+' and '+b.name+' share one blood.',
+     'The garden will allow it, if you ask twice.']);
+  const A=bloomPoint(a), B=bloomPoint(b);
+  cardEl.style.left=Math.min(Math.max((A.x+B.x)/2-150,12),Math.max(12,vw-320))+'px';
+  cardEl.style.top=Math.max(12,Math.min(A.y,B.y)-60)+'px';
+  requestAnimationFrame(()=>cardEl.classList.add('show'));
+}
+function openQuiet(){
+  quietOpen=true;
+  const gw=(GENWORDS[maxGenSeen-1]||(maxGenSeen+'th')).toLowerCase();
+  fillCard('The Garden','',
+    ['The founded line has ended in the '+gw+' generation.',
+     'The garden goes quiet. What grows now, grows wild.']);
+  cardEl.style.left=Math.max(12,vw/2-150)+'px';
+  cardEl.style.top=(vh*0.34)+'px';
+  requestAnimationFrame(()=>cardEl.classList.add('show'));
+  breath('die',1.4);
+}
+function openResetHint(){
+  chronOpen=false; inspecting=null;
+  fillCard('A New Garden','',
+    ['Hold this seed a while, and the garden returns to the dark.',
+     'Everything that grew here — every story, every pairing, the Chronicle itself — begins again as new.']);
+  cardEl.style.left=Math.max(12,vw-320)+'px';
+  cardEl.style.top=Math.max(12,soilTop()-240)+'px';
+  requestAnimationFrame(()=>cardEl.classList.add('show'));
+}
+
+/* ============ CONTINUITY ============ */
+const SAVEKEY='the_garden_v1';
+function save(){
+  try{
+    const wall=Date.now(), perf=performance.now();
+    const seedData=sd=>({
+      genome:sd.genome, story:sd.story, muts:sd.muts||[],
+      gen:sd.gen, anc:sd.anc, wildBlood:sd.wildBlood,
+      parentNames:sd.parentNames||[], name:sd.name, male:sd.male,
+      seed:sd.seed, x:sd.x, y:sd.y,
+      bornWall:wall-(perf-sd.born)
+    });
+    localStorage.setItem(SAVEKEY,JSON.stringify({
+      nextId, maxGenSeen, lineShown, chronicle, hulls,
+      kinBypass:Object.keys(kinBypass),
+      plants:plants.map(p=>({
+        id:p.id, seed:p.seed, genome:p.genome, story:p.story,
+        name:p.name, male:p.male, wild:p.wild, founder:p.founder, gen:p.gen,
+        parentNames:p.parentNames, anc:p.anc, wildBlood:p.wildBlood,
+        mateId:p.mateId, mateName:p.mateName,
+        xF:p.xF, yF:p.yF,
+        birthWall:wall-(perf-p.birth),
+        growDur:p.growDur, lifeDur:p.lifeDur
+      })),
+      seeds:seeds.map(seedData),
+      carried:carried?seedData(carried):null
+    }));
+    dirty=false;
+  }catch(e){}
+}
+(function init(){
+  if(/[?&]reset/.test(location.search)){
+    try{ localStorage.removeItem(SAVEKEY); }catch(e){}
+  }
+  let data=null;
+  try{ data=JSON.parse(localStorage.getItem(SAVEKEY)||'null'); }catch(e){ data=null; }
+  if(!data||!Array.isArray(data.plants)){
+    addFounder(0.42,0.84, 4242,
+      {stemHue:32,height:96,petals:7,petalHue:44,petalForm:1,leafForm:0,leafCount:3},'Fern',false);
+    addFounder(0.58,0.85, 1717,
+      {stemHue:95,height:88,petals:5,petalHue:14,petalForm:0,leafForm:2,leafCount:2},'Ash',true);
+    log('Fern and Ash were planted. The garden began.');
+    return;
+  }
+  nextId=data.nextId||1;
+  maxGenSeen=data.maxGenSeen||1;
+  lineShown=!!data.lineShown;
+  hadLife=true;
+  for(const k of (data.kinBypass||[])) kinBypass[k]=true;
+  for(const h of (data.hulls||[])) hulls.push(h);
+  for(const s of (data.chronicle||[])) chronicle.push(s);
+  const wall=Date.now();
+  const loadP=(d)=>addPlant({
+    id:d.id, seed:d.seed, genome:d.genome, story:d.story,
+    name:d.name, male:d.male, wild:!!d.wild, founder:!!d.founder, gen:d.gen,
+    parentNames:d.parentNames||[], anc:d.anc||[], wildBlood:!!d.wildBlood,
+    mateId:(d.mateId==null?null:d.mateId), mateName:d.mateName||null,
+    xF:d.xF, yF:d.yF,
+    birth:performance.now()-(wall-d.birthWall),
+    growDur:d.growDur, lifeDur:d.lifeDur,
+    cdUntil:0, busy:false
+  });
+  const away=[];
+  for(const d of data.plants){
+    if((wall-d.birthWall)>=d.lifeDur) away.push(d);
+    else loadP(d);
+  }
+  away.sort((x,y)=>(x.birthWall+x.lifeDur)-(y.birthWall+y.lifeDur));
+  for(const d of away) loadP(d);
+  for(const d of (data.seeds||[])){
+    if((wall-d.bornWall)>D(66000)) continue;
+    seeds.push({
+      genome:d.genome, story:d.story, muts:d.muts||[],
+      gen:d.gen, anc:d.anc||[], wildBlood:!!d.wildBlood,
+      parentNames:d.parentNames||[], name:d.name, male:!!d.male,
+      seed:d.seed, x:d.x, y:d.y,
+      born:performance.now()-(wall-d.bornWall)
+    });
+  }
+  if(data.carried&&(wall-data.carried.bornWall)<=D(66000)){
+    carried=Object.assign({},data.carried,{
+      born:performance.now()-(wall-data.carried.bornWall)
+    });
+  }
+  for(const d of away){
+    const p=plants.find(q=>q.id===d.id);
+    if(p) diePlant(p);
+  }
+  nextWild=performance.now()+D(plants.length===0?9000:(25000+Math.random()*35000));
+  dirty=true;
+})();
+window.addEventListener('beforeunload',save);
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) save(); });
+
+/* ============ THE SEED OF RETURN: in-world reset ============ */
+function startReset(){
+  resetPhase='out'; resetT0=performance.now();
+  closeInspect();
+  breath('die',1.5);
+}
+function doResetWipe(){
+  try{ localStorage.removeItem(SAVEKEY); }catch(e){}
+  plants.length=0; seeds.length=0; hulls.length=0; particles.length=0;
+  crossings.length=0; carried=null;
+  chronicle.length=0;
+  for(const k of Object.keys(kinBypass)) delete kinBypass[k];
+  nextId=1; maxGenSeen=1; lineShown=false; quietOpen=false;
+  addFounder(0.42,0.84, 4242,
+    {stemHue:32,height:96,petals:7,petalHue:44,petalForm:1,leafForm:0,leafCount:3},'Fern',false);
+  addFounder(0.58,0.85, 1717,
+    {stemHue:95,height:88,petals:5,petalHue:14,petalForm:0,leafForm:2,leafCount:2},'Ash',true);
+  log('Fern and Ash were planted. The garden began.');
+  nextWild=performance.now()+D(40000);
+  dirty=true;
+  breath('deep');
+}
+
+// ---------- drawing ----------
+function qpt(x0,y0,cx,cy,x1,y1,t){
+  const u=1-t;
+  return [u*u*x0+2*u*t*cx+t*t*x1, u*u*y0+2*u*t*cy+t*t*y1];
+}
+function drawPlant(p,t){
+  const g=p.genome, ph=phaseOf(p,t);
+  const {ease,wp,elder}=ph;
+  if(ease<=0) return;
+  const H=g.height*ease;
+  const x=plantX(p), by=plantBaseY(p);
+  const fl=Math.exp(-(t-p.flare)/900);
+  const cdF=p.cdUntil>t ? (p.cdUntil-t)/D(75000) : 0;
+  const swayAmp=(0.02+0.04*ease)*(elder?0.7:1)*(1-wp*0.6);
+  const sway=Math.sin(t*0.0012+g.ph)*swayAmp;
+  const bx0=x+g.lean*H*0.35, byy=by-H;
+  const dx=palm.x-bx0, dy=palm.y-byy;
+  const prox=Math.max(0,1-Math.hypot(dx,dy)/260);
+  const bend=ease>0.5 ? Math.max(-1,Math.min(1,dx/180))*16*prox : 0;
+  const tipX=bx0+bend+sway*H*0.22, tipY=byy;
+  const cX=x+g.lean*H*0.15, cY=by-H*0.55;
+  const stemHue=g.stemHue+(38-g.stemHue)*wp;
+  const stemSat=wp>0?48*(1-wp*0.7):48;
+  ctx.globalCompositeOperation='source-over';
+  ctx.lineCap='round';
+  for(const pass of [[5,'hsla('+stemHue+','+stemSat+'%,'+(22-wp*8)+'%,0.55)'],
+                     [2.5,'hsla('+stemHue+','+stemSat+'%,42%,1)']]){
+    ctx.lineWidth=pass[0]; ctx.strokeStyle=pass[1];
+    ctx.beginPath();
+    ctx.moveTo(x,by);
+    ctx.quadraticCurveTo(cX,cY,tipX,tipY);
+    ctx.stroke();
+  }
+  const leafCol='hsla('+(g.stemHue+8)+',45%,'+(38-wp*14)+'%,0.95)';
+  ctx.fillStyle=leafCol; ctx.strokeStyle=leafCol;
+  for(let i=0;i<g.leafCount;i++){
+    const fr=0.28+0.17*i, lt=ease-fr;
+    if(lt<=0.12) continue;
+    const s=H*0.15*Math.min(1,(lt-0.12)*5)*(1-wp*0.5);
+    const q=qpt(x,by,cX,cY,tipX,tipY,fr);
+    const side=(i%2===0)?1:-1;
+    const angle=-Math.PI/2+side*0.75+sway*2;
+    if(g.leafForm===0){
+      const lx=q[0]+Math.cos(angle)*s*0.5, ly=q[1]+Math.sin(angle)*s*0.5;
+      ctx.beginPath();
+      ctx.ellipse(lx,ly,s*0.55,s*0.24,angle,0,Math.PI*2);
+      ctx.fill();
+    } else if(g.leafForm===1){
+      const tx=q[0]+Math.cos(angle)*s, ty=q[1]+Math.sin(angle)*s;
+      const mx=q[0]+Math.cos(angle)*s*0.5, my=q[1]+Math.sin(angle)*s*0.5;
+      const nx=Math.cos(angle+Math.PI/2)*s*0.26, ny=Math.sin(angle+Math.PI/2)*s*0.26;
+      ctx.beginPath();
+      ctx.moveTo(q[0],q[1]);
+      ctx.quadraticCurveTo(mx+nx,my+ny,tx,ty);
+      ctx.quadraticCurveTo(mx-nx,my-ny,q[0],q[1]);
+      ctx.fill();
+    } else {
+      ctx.lineWidth=1.4;
+      for(let k=-1;k<=1;k++){
+        const a=angle+k*0.24;
+        ctx.beginPath();
+        ctx.moveTo(q[0],q[1]);
+        ctx.lineTo(q[0]+Math.cos(a)*s*1.2,q[1]+Math.sin(a)*s*1.2);
+        ctx.stroke();
+      }
+    }
+  }
+  const sb=Math.min(1,Math.max(0,(ease-0.6)/0.4));
+  if(sb<=0){
+    ctx.fillStyle='hsla('+stemHue+',45%,45%,0.9)';
+    ctx.beginPath();
+    ctx.arc(tipX,tipY,Math.max(2,H*0.04),0,Math.PI*2);
+    ctx.fill();
+    return;
+  }
+  const shrink=(0.7+0.3*(1-cdF))*(1-wp);
+  const L=H*0.22*(0.3+0.7*sb)*shrink;
+  const N=Math.ceil(g.petals*(1-wp));
+  if(N<=0) return;
+  ctx.globalCompositeOperation='lighter';
+  const ga=(0.16+0.10*Math.sin(t*0.0015+g.ph)+0.12*p.h+0.35*fl)
+           *sb*(elder?0.7:1)*(1-wp)+(p.wildBlood?0.04:0);
+  ctx.globalAlpha=Math.min(0.75,Math.max(0,ga));
+  ctx.drawImage(PALMG,tipX-L*1.6,tipY-L*1.6,L*3.2,L*3.2);
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+  for(let k=0;k<N;k++){
+    const radial=k/g.petals*Math.PI*2+g.ph*0.3;
+    const flutter=Math.sin(t*0.002+g.ph+k)*0.05;
+    const angle=-Math.PI/2+(radial+Math.PI/2)*sb+flutter;
+    const PL=L*(0.3+0.7*sb)*(k%2===0?1:0.92);
+    const light=(elder?52:58)+(k%3)*4;
+    ctx.fillStyle='hsla('+g.petalHue+',68%,'+light+'%,0.92)';
+    const form=g.petalForm;
+    const layers=form===2?[1,0.58]:[1];
+    for(let li=0;li<layers.length;li++){
+      const l=PL*layers[li], a2=angle+li*0.5;
+      if(form===0){
+        const px=tipX+Math.cos(a2)*l*0.55, py=tipY+Math.sin(a2)*l*0.55;
+        ctx.beginPath();
+        ctx.ellipse(px,py,l*0.5,l*0.24,a2,0,Math.PI*2);
+        ctx.fill();
+      } else {
+        const tx=tipX+Math.cos(a2)*l, ty=tipY+Math.sin(a2)*l;
+        const mx=tipX+Math.cos(a2)*l*0.5, my=tipY+Math.sin(a2)*l*0.5;
+        const nx=Math.cos(a2+Math.PI/2)*l*0.16, ny=Math.sin(a2+Math.PI/2)*l*0.16;
+        ctx.beginPath();
+        ctx.moveTo(tipX,tipY);
+        ctx.quadraticCurveTo(mx+nx,my+ny,tx,ty);
+        ctx.quadraticCurveTo(mx-nx,my-ny,tipX,tipY);
+        ctx.fill();
+      }
+    }
+  }
+  ctx.globalCompositeOperation='lighter';
+  ctx.fillStyle='rgba(255,214,140,0.9)';
+  ctx.beginPath();
+  ctx.arc(tipX,tipY,Math.max(1.5,L*0.2),0,Math.PI*2);
+  ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+}
+function drawSeed(sd,t){
+  const bob=Math.sin(t*0.003+sd.seed%10)*4;
+  const age=t-sd.born;
+  let a=1;
+  if(age>D(60000)) a=Math.max(0,1-(age-D(60000))/D(6000));
+  if(a<=0) return;
+  const x=sd.x, y=sd.y+bob;
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=0.30*a;
+  ctx.drawImage(PALMG,x-16,y-16,32,32);
+  ctx.globalAlpha=a;
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='rgba(255,224,170,0.9)';
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.rotate(-0.4);
+  ctx.beginPath();
+  ctx.ellipse(0,0,3,5,0,0,Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+  ctx.globalAlpha=1;
+}
+
+// ---------- ambience ----------
+const stars=[]; (function(){
+  const r=mulberry32(777);
+  for(let i=0;i<60;i++) stars.push({xF:r(),yF:r()*0.55,a:0.04+r()*0.12});
+})();
+const motes=[]; (function(){
+  const r=mulberry32(888);
+  for(let i=0;i<7;i++) motes.push({x:r()*vw,y:vh*0.2+r()*vh*0.35,
+    vx:0.008+r()*0.02, ph:r()*Math.PI*2});
+})();
+
+// ---------- the loop ----------
+let lastT=performance.now(), lastSave=0;
+function frame(t){
+  const dt=Math.min(120,t-lastT); lastT=t;
+
+  if(dragFrom && !plants.includes(dragFrom.p)){ dragFrom=null; dragging=false; }
+
+  // --- lifecycle ---
+  for(let i=plants.length-1;i>=0;i--){
+    const p=plants[i], ph=phaseOf(p,t);
+    if(ph.age>=p.lifeDur){
+      diePlant(p);
+      continue;
+    }
+    if(ph.wp>0){
+      p.shedAcc+=dt;
+      if(p.shedAcc>p.shedIv){
+        p.shedAcc=0;
+        const b=bloomPoint(p);
+        spawnP(b.x,b.y,p.genome.petalHue,1,1.6,-14);
+      }
+    }
+  }
+
+  // --- crossings in flight ---
+  for(let i=crossings.length-1;i>=0;i--){
+    if(t-crossings[i].t0>=crossings[i].dur){
+      completeCross(crossings[i]);
+      crossings.splice(i,1);
+    }
+  }
+
+  // --- unplanted seeds fade ---
+  for(let i=seeds.length-1;i>=0;i--){
+    if(t-seeds[i].born>D(66000)){
+      seeds.splice(i,1);
+      dirty=true;
+    }
+  }
+
+  // --- wildflowers ---
+  if(t>nextWild){
+    const wilds=plants.filter(q=>q.wild).length;
+    if(plants.length<MAX_PLANTS && wilds<4) spawnWildflower();
+    nextWild=t+D(plants.length===0?9000:(45000+Math.random()*45000));
+  }
+
+  // --- particles ---
+  for(let i=particles.length-1;i>=0;i--){
+    const pt=particles[i];
+    pt.life+=dt;
+    pt.x+=pt.vx*dt/1000; pt.y+=pt.vy*dt/1000;
+    if(pt.life>=pt.maxLife) particles.splice(i,1);
+  }
+
+  // --- the quiet ---
+  if(!lineShown && hadLife && plants.length===0 && seeds.length===0 && !carried){
+    const gw=(GENWORDS[maxGenSeen-1]||(maxGenSeen+'th')).toLowerCase();
+    log('The founded line has ended in the '+gw+' generation. The garden goes quiet.');
+    lineShown=true;
+    openQuiet();
+  }
+
+  // --- the Seed of Return: 2.5 seconds of held attention ---
+  let resetQ=0;
+  if(resetHold){
+    const rq=(t-resetHold.start)/2500;
+    if(rq>=1){ resetHold=null; startReset(); }
+    else resetQ=rq*rq*(3-2*rq);
+  }
+
+  // --- planting completes on its own ---
+  let holdQ=0;
+  if(hold){
+    const hp=(t-hold.start)/1200;
+    if(hp>=1){
+      plantSeed(carried,hold.x/vw,Math.min(0.96,Math.max(0.75,hold.y/vh)));
+      plantedAt=t;
+      carried=null;
+      dirty=true;
+      hold=null;
+    } else holdQ=hp*hp*(3-2*hp);
+  }
+
+  palm.x+=(mouse.x-palm.x)*0.12;
+  palm.y+=(mouse.y-palm.y)*0.12;
+
+  let hoverP=null;
+  if(!hold && !inspecting && !carried){
+    const h=nearestPlant(palm.x,palm.y);
+    if(h) hoverP=h.p;
+  }
+  for(const p of plants) p.h+=(((p===hoverP)?1:0)-p.h)*0.12;
+
+  // --- the hum ---
+  if(AC&&AC.state==='running'&&humOsc&&t-lastHum>140){
+    lastHum=t;
+    let hp=null, base=0;
+    if(hoverP&&phaseOf(hoverP,t).ease>=1){ hp=hoverP; base=0.03*hoverP.h; }
+    else if(inspecting&&phaseOf(inspecting,t).ease>=1){ hp=inspecting; base=0.02; }
+    if(hp){
+      humOsc.frequency.setTargetAtTime(storyPitch(hp.story),AC.currentTime,0.12);
+      humGain.gain.setTargetAtTime(base*(0.75+0.25*Math.sin(t*0.002)),AC.currentTime,0.15);
+    } else {
+      humGain.gain.setTargetAtTime(0,AC.currentTime,0.2);
+    }
+  }
+
+  // --- save, gently ---
+  if(dirty && t-lastSave>2000){ save(); lastSave=t; }
+
+  // ================= draw =================
+  ctx.clearRect(0,0,vw,vh);
+  const sky=ctx.createLinearGradient(0,0,0,vh);
+  sky.addColorStop(0,'#070503');
+  sky.addColorStop(0.6,'#0d0906');
+  sky.addColorStop(1,'#14100a');
+  ctx.fillStyle=sky; ctx.fillRect(0,0,vw,vh);
+  ctx.fillStyle='#ffe9c4';
+  for(const s of stars){
+    ctx.globalAlpha=s.a*(0.6+0.4*Math.sin(t*0.0008+s.xF*20));
+    ctx.fillRect(s.xF*vw,s.yF*vh,1.2,1.2);
+  }
+  ctx.globalAlpha=1;
+  const st=soilTop();
+  const soil=ctx.createLinearGradient(0,st,0,vh);
+  soil.addColorStop(0,'#171008');
+  soil.addColorStop(1,'#0b0704');
+  ctx.fillStyle=soil; ctx.fillRect(0,st,vw,vh-st);
+  ctx.strokeStyle='rgba(255,200,120,0.045)';
+  ctx.lineWidth=1;
+  for(let i=1;i<=5;i++){
+    const y=st+i*(vh-st)/6;
+    ctx.beginPath();
+    for(let x=0;x<=vw;x+=24){
+      const yy=y+Math.sin(x*0.02+i*7)*3;
+      x===0?ctx.moveTo(x,yy):ctx.lineTo(x,yy);
+    }
+    ctx.stroke();
+  }
+  ctx.fillStyle='rgba(190,150,100,0.10)';
+  for(const h of hulls){
+    ctx.beginPath();
+    ctx.ellipse(h.xF*vw,h.yF*vh,7,2.5,0,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  // the chronicle stone
+  const sp=stonePos();
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=0.12+0.06*Math.sin(t*0.002);
+  ctx.drawImage(PALMG,sp.x-20,sp.y-20,40,40);
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+  ctx.save();
+  ctx.translate(sp.x,sp.y);
+  ctx.rotate(-0.2);
+  ctx.fillStyle='#241b12';
+  ctx.beginPath();
+  ctx.ellipse(0,0,11,8,0,0,Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle='rgba(255,206,120,'+(0.3+0.15*Math.sin(t*0.003))+')';
+  ctx.lineWidth=1;
+  ctx.beginPath();
+  ctx.moveTo(-6,-2);
+  ctx.quadraticCurveTo(0,-6,6,1);
+  ctx.stroke();
+  ctx.restore();
+
+  // the Seed of Return
+  const rp=resetPos();
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=0.10+0.05*Math.sin(t*0.0017+2);
+  ctx.drawImage(PALMG,rp.x-20,rp.y-20,40,40);
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+  ctx.save();
+  ctx.translate(rp.x,rp.y);
+  ctx.rotate(0.18);
+  ctx.fillStyle='#1a1822';
+  ctx.beginPath();
+  ctx.ellipse(0,0,10,7.5,0,0,Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle='rgba(170,195,235,'+(0.3+0.12*Math.sin(t*0.003))+')';
+  ctx.lineWidth=1;
+  ctx.beginPath();
+  for(let a=0;a<Math.PI*3.6;a+=0.25){
+    const r=0.3+a*0.46;
+    const px=Math.cos(a)*r, py=Math.sin(a)*r;
+    a===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // sky motes
+  ctx.globalCompositeOperation='lighter';
+  for(const m of motes){
+    m.x+=m.vx*dt;
+    if(m.x>vw+20) m.x=-20;
+    const y=m.y+Math.sin(t*0.001+m.ph)*10;
+    ctx.globalAlpha=0.10+0.08*Math.sin(t*0.002+m.ph);
+    ctx.drawImage(PALMG,m.x-8,y-8,16,16);
+  }
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+
+  // paired threads
+  ctx.globalCompositeOperation='lighter';
+  for(const p of plants){
+    if(p.mateId==null) continue;
+    const q=plants.find(z=>z.id===p.mateId);
+    if(!q || p.id>q.id) continue;
+    const ax=plantX(p),ay=plantBaseY(p), bx=plantX(q),by=plantBaseY(q);
+    ctx.strokeStyle='rgba(255,206,120,'+(0.12+0.06*Math.sin(t*0.002+p.id))+')';
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(ax,ay);
+    ctx.quadraticCurveTo((ax+bx)/2,Math.max(ay,by)+10,bx,by);
+    ctx.stroke();
+  }
+
+  // the family tree
+  if(inspecting){
+    const me=inspecting;
+    const mx0=plantX(me), my0=plantBaseY(me);
+    const parentIds=me.anc.filter(e=>e.h===1).map(e=>e.id);
+    const thread=(qx,qy,col)=>{
+      ctx.strokeStyle=col;
+      ctx.lineWidth=1;
+      ctx.beginPath();
+      ctx.moveTo(mx0,my0);
+      ctx.quadraticCurveTo((mx0+qx)/2,Math.max(my0,qy)+10,qx,qy);
+      ctx.stroke();
+    };
+    for(const pid of parentIds){
+      const q=plants.find(z=>z.id===pid);
+      if(q) thread(plantX(q),plantBaseY(q),
+        'rgba(255,214,140,'+(0.22+0.08*Math.sin(t*0.002+q.id))+')');
+    }
+    for(const q of plants){
+      if(q===me) continue;
+      if(q.anc.some(e=>e.id===me.id&&e.h===1))
+        thread(plantX(q),plantBaseY(q),
+          'rgba(255,214,140,'+(0.18+0.07*Math.sin(t*0.002+q.id))+')');
+    }
+    for(const q of plants){
+      if(q===me) continue;
+      if(!q.anc.some(e=>e.h===1&&parentIds.indexOf(e.id)>=0)) continue;
+      thread(plantX(q),plantBaseY(q),'rgba(150,180,255,0.16)');
+    }
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  const order=[...plants].sort((a,b)=>a.yF-b.yF);
+  for(const p of order) drawPlant(p,t);
+  for(const sd of seeds) drawSeed(sd,t);
+
+  ctx.globalCompositeOperation='lighter';
+  for(const c of crossings){
+    const k=Math.min(1,(t-c.t0)/c.dur);
+    const A=bloomPoint(c.a), B=bloomPoint(c.b);
+    const cxx=(A.x+B.x)/2, cyy=Math.min(A.y,B.y)-90;
+    ctx.strokeStyle='rgba(255,206,120,0.30)';
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    for(let i=0;i<=30;i++){
+      const q=qpt(A.x,A.y,cxx,cyy,B.x,B.y,k*i/30);
+      i===0?ctx.moveTo(q[0],q[1]):ctx.lineTo(q[0],q[1]);
+    }
+    ctx.stroke();
+    const h=qpt(A.x,A.y,cxx,cyy,B.x,B.y,k);
+    ctx.globalAlpha=0.55+0.3*Math.sin(t*0.01);
+    ctx.drawImage(PALMG,h[0]-12,h[1]-12,24,24);
+    ctx.globalAlpha=1;
+  }
+
+  if(dragFrom && dragging){
+    let target=null, targetKin=false;
+    const h=nearestPlant(palm.x,palm.y);
+    if(h && h.p!==dragFrom.p && pairableWith(dragFrom.p,h.p,t)){
+      target=h.p;
+      targetKin=related(dragFrom.p,target);
+    }
+    const A=bloomPoint(dragFrom.p);
+    const cxx=(A.x+palm.x)/2, cyy=Math.min(A.y,palm.y)-70;
+    ctx.strokeStyle='rgba(255,206,120,0.35)';
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    for(let i=0;i<=24;i++){
+      const q=qpt(A.x,A.y,cxx,cyy,palm.x,palm.y,i/24);
+      i===0?ctx.moveTo(q[0],q[1]):ctx.lineTo(q[0],q[1]);
+    }
+    ctx.stroke();
+    ctx.globalAlpha=0.5;
+    ctx.drawImage(PALMG,palm.x-14,palm.y-14,28,28);
+    ctx.globalAlpha=1;
+    if(target){
+      const B=bloomPoint(target);
+      ctx.lineWidth=1.5;
+      ctx.beginPath();
+      ctx.arc(B.x,B.y,14+2*Math.sin(t*0.01),0,Math.PI*2);
+      if(targetKin){
+        ctx.strokeStyle='rgba(150,180,255,0.75)';
+        ctx.stroke();
+        ctx.font='11px Georgia, serif';
+        ctx.textAlign='center';
+        ctx.fillStyle='rgba(180,200,255,0.85)';
+        ctx.fillText('same blood',B.x,B.y+34);
+      } else {
+        ctx.strokeStyle='rgba(255,214,140,0.7)';
+        ctx.stroke();
+      }
+    } else if(dragFrom.p.mateId!=null){
+      const mq=plants.find(z=>z.id===dragFrom.p.mateId);
+      if(mq){
+        const B=bloomPoint(mq);
+        ctx.strokeStyle='rgba(255,214,140,0.5)';
+        ctx.lineWidth=1.5;
+        ctx.beginPath();
+        ctx.arc(B.x,B.y,14+2*Math.sin(t*0.01),0,Math.PI*2);
+        ctx.stroke();
+      }
+    }
+  }
+
+  for(const pt of particles){
+    ctx.globalAlpha=Math.max(0,1-pt.life/pt.maxLife)*0.8;
+    ctx.fillStyle='hsla('+pt.hue+',70%,62%,1)';
+    ctx.beginPath();
+    ctx.arc(pt.x,pt.y,pt.r,0,Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+
+  // the warmth of a held press
+  if(hold){
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=0.3+0.45*holdQ;
+    ctx.drawImage(HOLDG,hold.x-170,hold.y-170);
+    ctx.strokeStyle='rgba(255,206,120,'+(0.35*holdQ)+')';
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    ctx.arc(hold.x,hold.y,26+120*holdQ,0,Math.PI*2);
+    ctx.stroke();
+    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
+  }
+
+  // the Seed of Return: the garden dims under your held hand
+  if(resetHold){
+    ctx.globalCompositeOperation='lighter';
+    ctx.strokeStyle='rgba(170,195,235,'+(0.4*resetQ)+')';
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    ctx.arc(rp.x,rp.y,16+150*resetQ,0,Math.PI*2);
+    ctx.stroke();
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='rgba(4,3,2,'+(resetQ*0.4)+')';
+    ctx.fillRect(0,0,vw,vh);
+  }
+
+  // the cursor
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=0.35;
+  ctx.drawImage(PALMG,palm.x-70,palm.y-70);
+  if(carried){
+    ctx.globalAlpha=0.9;
+    ctx.fillStyle='rgba(255,232,180,0.95)';
+    ctx.save();
+    ctx.translate(palm.x+10,palm.y+8);
+    ctx.rotate(-0.4);
+    ctx.beginPath();
+    ctx.ellipse(0,0,3.5,5.5,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  } else {
+    ctx.globalAlpha=1;
+    ctx.fillStyle='rgba(255,232,180,0.9)';
+    ctx.beginPath();
+    ctx.arc(palm.x,palm.y,2,0,Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+
+  // night falls, and a new garden
+  if(resetPhase){
+    const e=t-resetT0;
+    if(resetPhase==='out'){
+      const a=Math.min(1,e/1200);
+      ctx.fillStyle='rgba(4,3,2,'+(a*0.98)+')';
+      ctx.fillRect(0,0,vw,vh);
+      if(a>=1){
+        doResetWipe();
+        resetPhase='in'; resetT0=t;
+      }
+    } else {
+      const a=Math.max(0,1-Math.min(1,e/1500));
+      ctx.fillStyle='rgba(4,3,2,'+(a*0.98)+')';
+      ctx.fillRect(0,0,vw,vh);
+      if(a<=0) resetPhase=null;
+    }
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
