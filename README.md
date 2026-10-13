@@ -151,5 +151,4 @@ what:
 ## License
 
 The code and story text of this repository are released under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) —
-share and adapt freely with attribution, not for commercial use. (Swap this
-for MIT if you prefer code-only licensing; see below.)
+share and adapt freely with attribution, not for commercial use.
